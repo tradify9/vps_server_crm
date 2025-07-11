@@ -4,240 +4,364 @@ const Attendance = require('../models/Attendance');
 const SalarySlip = require('../models/SalarySlip');
 const auth = require('../middleware/auth');
 const { createObjectCsvStringifier } = require('csv-writer');
+const moment = require('moment-timezone');
 
+// भारतीय समयक्षेत्र (IST) सेट करें
+const TIMEZONE = 'Asia/Kolkata';
+
+// पंच इन/आउट रिकॉर्ड करें
 router.post('/punch', auth, async (req, res) => {
   const { type } = req.body;
   try {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
+    // IST में आज की शुरुआत और अंत
+    const todayStart = moment().tz(TIMEZONE).startOf('day').toDate();
+    const todayEnd = moment().tz(TIMEZONE).endOf('day').toDate();
 
     const existingAttendance = await Attendance.findOne({
       employee: req.user.id,
       date: { $gte: todayStart, $lte: todayEnd },
     });
 
+    // IST में वर्तमान समय
+    const currentTime = moment().tz(TIMEZONE).toDate();
+
     if (type === 'in') {
       if (existingAttendance && existingAttendance.punchIn) {
-        return res.status(400).json({ message: 'Already punched in today' });
+        return res.status(400).json({ message: 'आज आप पहले ही पंच इन कर चुके हैं' });
       }
+      
       const attendance = new Attendance({
         employee: req.user.id,
-        date: new Date(),
-        punchIn: new Date(),
+        date: currentTime,
+        punchIn: currentTime
       });
+      
       await attendance.save();
-      res.json({ message: 'Punch-in recorded', attendance });
+      res.json({ 
+        message: 'पंच-इन सफलतापूर्वक दर्ज किया गया',
+        attendance: {
+          ...attendance.toObject(),
+          date: moment(attendance.date).tz(TIMEZONE).format('YYYY-MM-DD'),
+          punchIn: moment(attendance.punchIn).tz(TIMEZONE).format('HH:mm:ss'),
+          punchOut: attendance.punchOut ? moment(attendance.punchOut).tz(TIMEZONE).format('HH:mm:ss') : null
+        }
+      });
     } else if (type === 'out') {
       if (!existingAttendance) {
-        return res.status(400).json({ message: 'No punch-in record found for today' });
+        return res.status(400).json({ message: 'आज के लिए कोई पंच-इन रिकॉर्ड नहीं मिला' });
       }
       if (existingAttendance.punchOut) {
-        return res.status(400).json({ message: 'Already punched out today' });
+        return res.status(400).json({ message: 'आज आप पहले ही पंच आउट कर चुके हैं' });
       }
-      existingAttendance.punchOut = new Date();
+      
+      // पंच आउट समय पंच इन से पहले नहीं हो सकता
+      if (existingAttendance.punchIn && currentTime < existingAttendance.punchIn) {
+        return res.status(400).json({ message: 'पंच आउट समय पंच इन से पहले नहीं हो सकता' });
+      }
+
+      existingAttendance.punchOut = currentTime;
       await existingAttendance.save();
-      res.json({ message: 'Punch-out recorded', attendance: existingAttendance });
+      
+      res.json({ 
+        message: 'पंच-आउट सफलतापूर्वक दर्ज किया गया',
+        attendance: {
+          ...existingAttendance.toObject(),
+          date: moment(existingAttendance.date).tz(TIMEZONE).format('YYYY-MM-DD'),
+          punchIn: moment(existingAttendance.punchIn).tz(TIMEZONE).format('HH:mm:ss'),
+          punchOut: moment(existingAttendance.punchOut).tz(TIMEZONE).format('HH:mm:ss')
+        }
+      });
     } else {
-      return res.status(400).json({ message: 'Invalid punch type' });
+      return res.status(400).json({ message: 'अमान्य पंच प्रकार' });
     }
   } catch (err) {
-    console.error('Punch error:', err);
-    res.status(500).json({ message: 'Server error while recording punch' });
+    console.error('पंच त्रुटि:', {
+      error: err.message,
+      stack: err.stack,
+      timestamp: moment().tz(TIMEZONE).format()
+    });
+    res.status(500).json({ message: 'पंच रिकॉर्ड करने में सर्वर त्रुटि' });
   }
 });
 
+// सभी अटेंडेंस रिकॉर्ड्स प्राप्त करें (एडमिन के लिए)
 router.get('/', auth, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ message: 'Unauthorized' });
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'अनधिकृत' });
+  
   const { startDate, endDate } = req.query;
-  const query = startDate && endDate
-    ? { date: { $gte: new Date(startDate), $lte: new Date(endDate) } }
-    : {};
   try {
-    const attendances = await Attendance.find(query).populate('employee', 'employeeId name');
-    res.json(attendances);
+    // IST समयक्षेत्र में दिनांक पार्स करें
+    const start = startDate ? moment.tz(startDate, TIMEZONE).startOf('day').toDate() : null;
+    const end = endDate ? moment.tz(endDate, TIMEZONE).endOf('day').toDate() : null;
+    
+    const query = start && end ? { date: { $gte: start, $lte: end } } : {};
+    
+    const attendances = await Attendance.find(query)
+      .populate('employee', 'employeeId name hourlyRate')
+      .lean();
+    
+    // IST में समय प्रारूपित करें
+    const formattedAttendances = attendances.map(att => {
+      const punchIn = att.punchIn ? moment(att.punchIn).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      const punchOut = att.punchOut ? moment(att.punchOut).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      
+      let hoursWorked = '0.00';
+      if (att.punchIn && att.punchOut) {
+        const duration = moment.duration(moment(att.punchOut).diff(moment(att.punchIn)));
+        hoursWorked = (duration.asHours()).toFixed(2);
+      }
+      
+      const hourlyRate = att.employee?.hourlyRate || 0;
+      const totalSalary = (parseFloat(hoursWorked) * hourlyRate).toFixed(2);
+      
+      return {
+        ...att,
+        employeeId: att.employee?.employeeId || 'N/A',
+        name: att.employee?.name || 'N/A',
+        date: moment(att.date).tz(TIMEZONE).format('YYYY-MM-DD'),
+        punchIn,
+        punchOut,
+        hoursWorked,
+        hourlyRate,
+        totalSalary
+      };
+    });
+    
+    res.json(formattedAttendances);
   } catch (err) {
-    console.error('Fetch attendance error:', err);
-    res.status(500).json({ message: 'Server error while fetching attendance' });
+    console.error('अटेंडेंस प्राप्त करने में त्रुटि:', err);
+    res.status(500).json({ message: 'अटेंडेंस प्राप्त करने में सर्वर त्रुटि' });
   }
 });
 
+// वर्तमान उपयोगकर्ता का अटेंडेंस डेटा प्राप्त करें
 router.get('/my-attendance', auth, async (req, res) => {
   const { startDate, endDate } = req.query;
-  const query = {
-    employee: req.user.id,
-    ...(startDate && endDate && {
-      date: { $gte: new Date(startDate), $lte: new Date(endDate) },
-    }),
-  };
   try {
-    const attendances = await Attendance.find(query).populate('employee', 'employeeId name');
-    res.json(attendances);
+    // IST समयक्षेत्र में दिनांक पार्स करें
+    const start = startDate ? moment.tz(startDate, TIMEZONE).startOf('day').toDate() : null;
+    const end = endDate ? moment.tz(endDate, TIMEZONE).endOf('day').toDate() : null;
+    
+    const query = { 
+      employee: req.user.id,
+      ...(start && end && { date: { $gte: start, $lte: end } })
+    };
+    
+    const attendances = await Attendance.find(query)
+      .populate('employee', 'employeeId name hourlyRate')
+      .lean();
+    
+    // IST में समय प्रारूपित करें
+    const formattedAttendances = attendances.map(att => {
+      const punchIn = att.punchIn ? moment(att.punchIn).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      const punchOut = att.punchOut ? moment(att.punchOut).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      
+      let hoursWorked = '0.00';
+      if (att.punchIn && att.punchOut) {
+        const duration = moment.duration(moment(att.punchOut).diff(moment(att.punchIn)));
+        hoursWorked = (duration.asHours()).toFixed(2);
+      }
+      
+      const hourlyRate = att.employee?.hourlyRate || 0;
+      const totalSalary = (parseFloat(hoursWorked) * hourlyRate).toFixed(2);
+      
+      return {
+        ...att,
+        date: moment(att.date).tz(TIMEZONE).format('YYYY-MM-DD'),
+        punchIn,
+        punchOut,
+        hoursWorked,
+        hourlyRate,
+        totalSalary
+      };
+    });
+    
+    res.json(formattedAttendances);
   } catch (err) {
-    console.error('Fetch my-attendance error:', err);
-    res.status(500).json({ message: 'Server error while fetching your attendance' });
+    console.error('अटेंडेंस प्राप्त करने में त्रुटि:', err);
+    res.status(500).json({ message: 'अटेंडेंस प्राप्त करने में सर्वर त्रुटि' });
   }
 });
 
+// अटेंडेंस ओवरव्यू (एडमिन के लिए)
 router.get('/overview', auth, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ message: 'Unauthorized' });
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'अनधिकृत' });
+  
   try {
     const attendances = await Attendance.find()
       .populate('employee', 'employeeId name')
-      .sort({ date: -1 });
+      .sort({ date: -1 })
+      .lean();
+    
     const overview = attendances.reduce((acc, att) => {
-      const date = new Date(att.date).toISOString().split('T')[0];
+      const date = moment(att.date).tz(TIMEZONE).format('YYYY-MM-DD');
       if (!acc[date]) acc[date] = [];
-      const hoursWorked = att.punchOut && att.punchIn
-        ? ((new Date(att.punchOut) - new Date(att.punchIn)) / 1000 / 60 / 60).toFixed(2)
-        : '0.00';
+      
+      const punchIn = att.punchIn ? moment(att.punchIn).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      const punchOut = att.punchOut ? moment(att.punchOut).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      
+      let hoursWorked = '0.00';
+      if (att.punchIn && att.punchOut) {
+        const duration = moment.duration(moment(att.punchOut).diff(moment(att.punchIn)));
+        hoursWorked = (duration.asHours()).toFixed(2);
+      }
+      
       acc[date].push({
-        employeeId: att.employee.employeeId,
-        name: att.employee.name,
-        punchIn: att.punchIn ? new Date(att.punchIn).toLocaleTimeString('en-IN') : '-',
-        punchOut: att.punchOut ? new Date(att.punchOut).toLocaleTimeString('en-IN') : '-',
-        hoursWorked,
+        employeeId: att.employee?.employeeId || 'N/A',
+        name: att.employee?.name || 'N/A',
+        punchIn,
+        punchOut,
+        hoursWorked
       });
+      
       return acc;
     }, {});
+    
     res.json(overview);
   } catch (err) {
-    console.error('Fetch overview error:', err);
-    res.status(500).json({ message: 'Server error while fetching attendance overview' });
+    console.error('ओवरव्यू प्राप्त करने में त्रुटि:', err);
+    res.status(500).json({ message: 'ओवरव्यू प्राप्त करने में सर्वर त्रुटि' });
   }
 });
 
+// CSV डाउनलोड (एडमिन के लिए)
 router.get('/download', auth, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ message: 'Unauthorized' });
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'अनधिकृत' });
+  
   const { startDate, endDate } = req.query;
   if (!startDate || !endDate) {
-    return res.status(400).json({ message: 'Start date and end date are required' });
+    return res.status(400).json({ message: 'प्रारंभ और समाप्ति तिथि आवश्यक है' });
   }
+  
   try {
+    // IST समयक्षेत्र में दिनांक पार्स करें
+    const start = moment.tz(startDate, TIMEZONE).startOf('day').toDate();
+    const end = moment.tz(endDate, TIMEZONE).endOf('day').toDate();
+    
     const attendances = await Attendance.find({
-      date: { $gte: new Date(startDate), $lte: new Date(endDate) },
-    }).populate('employee', 'employeeId name');
-
+      date: { $gte: start, $lte: end }
+    }).populate('employee', 'employeeId name hourlyRate');
+    
     if (!attendances.length) {
-      return res.status(404).json({ message: 'No attendance records found for the selected date range' });
+      return res.status(404).json({ message: 'चयनित तिथि सीमा में कोई अटेंडेंस रिकॉर्ड नहीं मिला' });
     }
-
-    // Fetch salary slips for the date range to get hourly rates
-    const salarySlips = await SalarySlip.find({
-      month: { $gte: startDate.slice(0, 7), $lte: endDate.slice(0, 7) },
-    }).populate('employee', '_id');
-
+    
     const csvStringifier = createObjectCsvStringifier({
       header: [
-        { id: 'employeeId', title: 'Employee ID' },
-        { id: 'name', title: 'Name' },
-        { id: 'date', title: 'Date' },
-        { id: 'punchIn', title: 'Punch In' },
-        { id: 'punchOut', title: 'Punch Out' },
-        { id: 'hoursWorked', title: 'Hours Worked' },
-        { id: 'hourlyRate', title: 'Hourly Rate (₹)' },
-        { id: 'totalSalary', title: 'Total Salary (₹)' },
+        { id: 'employeeId', title: 'कर्मचारी ID' },
+        { id: 'name', title: 'नाम' },
+        { id: 'date', title: 'तिथि' },
+        { id: 'punchIn', title: 'पंच इन' },
+        { id: 'punchOut', title: 'पंच आउट' },
+        { id: 'hoursWorked', title: 'काम किए गए घंटे' },
+        { id: 'hourlyRate', title: 'प्रति घंटा दर (₹)' },
+        { id: 'totalSalary', title: 'कुल वेतन (₹)' },
       ],
     });
-
+    
     const records = attendances.map(att => {
-      const hoursWorked = att.punchOut && att.punchIn
-        ? ((new Date(att.punchOut) - new Date(att.punchIn)) / 1000 / 60 / 60).toFixed(2)
-        : '0.00';
-      const dateMonth = new Date(att.date).toISOString().slice(0, 7);
-      const salarySlip = salarySlips.find(
-        slip => slip.employee._id.toString() === att.employee._id.toString() && slip.month === dateMonth
-      );
-      const hourlyRate = salarySlip ? (salarySlip.amount / salarySlip.hoursWorked).toFixed(2) : '100.00';
-      const totalSalary = (hoursWorked * hourlyRate).toFixed(2);
-
+      const punchIn = att.punchIn ? moment(att.punchIn).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      const punchOut = att.punchOut ? moment(att.punchOut).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      
+      let hoursWorked = '0.00';
+      if (att.punchIn && att.punchOut) {
+        const duration = moment.duration(moment(att.punchOut).diff(moment(att.punchIn)));
+        hoursWorked = (duration.asHours()).toFixed(2);
+      }
+      
+      const hourlyRate = att.employee?.hourlyRate || 0;
+      const totalSalary = (parseFloat(hoursWorked) * hourlyRate).toFixed(2);
+      
       return {
         employeeId: att.employee?.employeeId || 'N/A',
         name: att.employee?.name || 'N/A',
-        date: new Date(att.date).toLocaleDateString('en-IN'),
-        punchIn: att.punchIn ? new Date(att.punchIn).toLocaleTimeString('en-IN') : '-',
-        punchOut: att.punchOut ? new Date(att.punchOut).toLocaleTimeString('en-IN') : '-',
+        date: moment(att.date).tz(TIMEZONE).format('YYYY-MM-DD'),
+        punchIn,
+        punchOut,
         hoursWorked,
         hourlyRate,
-        totalSalary,
+        totalSalary
       };
     });
-
+    
     const csvContent = csvStringifier.getHeaderString() + csvStringifier.stringifyRecords(records);
-
+    
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename=attendance-${startDate}-${endDate}.csv`);
-    res.send('\ufeff' + csvContent); // Add UTF-8 BOM for proper encoding
+    res.send(csvContent);
   } catch (err) {
-    console.error('Download CSV error:', err);
-    res.status(500).json({ message: 'Server error while downloading CSV' });
+    console.error('CSV डाउनलोड त्रुटि:', err);
+    res.status(500).json({ message: 'CSV डाउनलोड करने में सर्वर त्रुटि' });
   }
 });
 
+// व्यक्तिगत CSV डाउनलोड
 router.get('/download/my-attendance', auth, async (req, res) => {
   const { startDate, endDate } = req.query;
   if (!startDate || !endDate) {
-    return res.status(400).json({ message: 'Start date and end date are required' });
+    return res.status(400).json({ message: 'प्रारंभ और समाप्ति तिथि आवश्यक है' });
   }
+  
   try {
+    // IST समयक्षेत्र में दिनांक पार्स करें
+    const start = moment.tz(startDate, TIMEZONE).startOf('day').toDate();
+    const end = moment.tz(endDate, TIMEZONE).endOf('day').toDate();
+    
     const attendances = await Attendance.find({
       employee: req.user.id,
-      date: { $gte: new Date(startDate), $lte: new Date(endDate) },
-    }).populate('employee', 'employeeId name');
-
+      date: { $gte: start, $lte: end }
+    }).populate('employee', 'employeeId name hourlyRate');
+    
     if (!attendances.length) {
-      return res.status(404).json({ message: 'No attendance records found for the selected date range' });
+      return res.status(404).json({ message: 'चयनित तिथि सीमा में कोई अटेंडेंस रिकॉर्ड नहीं मिला' });
     }
-
-    // Fetch salary slips for the date range
-    const salarySlips = await SalarySlip.find({
-      employee: req.user.id,
-      month: { $gte: startDate.slice(0, 7), $lte: endDate.slice(0, 7) },
-    });
-
+    
     const csvStringifier = createObjectCsvStringifier({
       header: [
-        { id: 'employeeId', title: 'Employee ID' },
-        { id: 'name', title: 'Name' },
-        { id: 'date', title: 'Date' },
-        { id: 'punchIn', title: 'Punch In' },
-        { id: 'punchOut', title: 'Punch Out' },
-        { id: 'hoursWorked', title: 'Hours Worked' },
-        { id: 'hourlyRate', title: 'Hourly Rate (₹)' },
-        { id: 'totalSalary', title: 'Total Salary (₹)' },
+        { id: 'employeeId', title: 'कर्मचारी ID' },
+        { id: 'name', title: 'नाम' },
+        { id: 'date', title: 'तिथि' },
+        { id: 'punchIn', title: 'पंच इन' },
+        { id: 'punchOut', title: 'पंच आउट' },
+        { id: 'hoursWorked', title: 'काम किए गए घंटे' },
+        { id: 'hourlyRate', title: 'प्रति घंटा दर (₹)' },
+        { id: 'totalSalary', title: 'कुल वेतन (₹)' },
       ],
     });
-
+    
     const records = attendances.map(att => {
-      const hoursWorked = att.punchOut && att.punchIn
-        ? ((new Date(att.punchOut) - new Date(att.punchIn)) / 1000 / 60 / 60).toFixed(2)
-        : '0.00';
-      const dateMonth = new Date(att.date).toISOString().slice(0, 7);
-      const salarySlip = salarySlips.find(slip => slip.month === dateMonth);
-      const hourlyRate = salarySlip ? (salarySlip.amount / salarySlip.hoursWorked).toFixed(2) : '100.00';
-      const totalSalary = (hoursWorked * hourlyRate).toFixed(2);
-
+      const punchIn = att.punchIn ? moment(att.punchIn).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      const punchOut = att.punchOut ? moment(att.punchOut).tz(TIMEZONE).format('HH:mm:ss') : '-';
+      
+      let hoursWorked = '0.00';
+      if (att.punchIn && att.punchOut) {
+        const duration = moment.duration(moment(att.punchOut).diff(moment(att.punchIn)));
+        hoursWorked = (duration.asHours()).toFixed(2);
+      }
+      
+      const hourlyRate = att.employee?.hourlyRate || 0;
+      const totalSalary = (parseFloat(hoursWorked) * hourlyRate).toFixed(2);
+      
       return {
         employeeId: att.employee?.employeeId || 'N/A',
         name: att.employee?.name || 'N/A',
-        date: new Date(att.date).toLocaleDateString('en-IN'),
-        punchIn: att.punchIn ? new Date(att.punchIn).toLocaleTimeString('en-IN') : '-',
-        punchOut: att.punchOut ? new Date(att.punchOut).toLocaleTimeString('en-IN') : '-',
+        date: moment(att.date).tz(TIMEZONE).format('YYYY-MM-DD'),
+        punchIn,
+        punchOut,
         hoursWorked,
         hourlyRate,
-        totalSalary,
+        totalSalary
       };
     });
-
+    
     const csvContent = csvStringifier.getHeaderString() + csvStringifier.stringifyRecords(records);
-
+    
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename=attendance-${startDate}-${endDate}.csv`);
-    res.send('\ufeff' + csvContent); // Add UTF-8 BOM for proper encoding
+    res.setHeader('Content-Disposition', `attachment; filename=my-attendance-${startDate}-${endDate}.csv`);
+    res.send(csvContent);
   } catch (err) {
-    console.error('Download my-attendance CSV error:', err);
-    res.status(500).json({ message: 'Server error while downloading your attendance CSV' });
+    console.error('CSV डाउनलोड त्रुटि:', err);
+    res.status(500).json({ message: 'CSV डाउनलोड करने में सर्वर त्रुटि' });
   }
 });
 
