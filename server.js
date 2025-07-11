@@ -12,7 +12,7 @@ require('dotenv').config();
 const app = express();
 
 // Fix Mongoose strictQuery deprecation warning
-mongoose.set('strictQuery', true);
+mongoose.set('strictQuery', false);
 
 connectDB();
 
