@@ -7,6 +7,109 @@ const auth = require('../middleware/auth');
 const PDFDocument = require('pdfkit');
 const { sendEmail } = require('../utils/sendEmail');
 
+/**
+ * PDF Generator Function (Professional Single Page Template)
+ */
+const generateSalarySlipPDF = (salarySlip, employee) => {
+  return new Promise((resolve) => {
+    const doc = new PDFDocument({ size: 'A4', margin: 40 });
+    let buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => resolve(Buffer.concat(buffers)));
+
+    const year = new Date().getFullYear();
+    const colX = [40, 200, 280, 360, 450]; // table columns
+
+    // === Company Header ===
+    doc.fillColor('#1e3a8a').fontSize(22).font('Helvetica-Bold').text('Fintradify', 40, 40);
+    doc.fontSize(10).fillColor('#444').font('Helvetica')
+      .text('C6, C Block, Sector 7, Noida, UP 201301', 40, 65)
+      .text('Phone: +91 7836009907 | Email: hr@fintradify.com', 40, 80);
+
+    doc.fontSize(22).fillColor('#1e3a8a').text('PAYSLIP', 450, 40);
+
+    // === Employee Info Section (Left) ===
+    doc.fillColor('#ffffff').rect(40, 110, 220, 20).fill('#3b82f6');
+    doc.fillColor('#fff').fontSize(11).text('EMPLOYEE INFORMATION', 45, 115);
+
+    doc.fillColor('#111827').font('Helvetica').fontSize(10);
+    doc.text(`Name: ${employee.name}`, 40, 140);
+    doc.text(`Employee ID: ${employee.employeeId}`, 40, 155);
+    doc.text(`Position: ${employee.position}`, 40, 170);
+    doc.text(`Email: ${employee.email}`, 40, 185);
+
+    // === Pay Info Section (Right) ===
+    const rightX = 300;
+    doc.fillColor('#1e3a8a').font('Helvetica-Bold').fontSize(11);
+    doc.text('PAY DATE', rightX, 110);
+    doc.text('PAY TYPE', rightX + 100, 110);
+    doc.text('PERIOD', rightX + 200, 110);
+
+    doc.fillColor('#111827').font('Helvetica').fontSize(10);
+    doc.text(new Date().toLocaleDateString('en-IN'), rightX, 125);
+    doc.text('Monthly', rightX + 100, 125);
+    doc.text(salarySlip.month, rightX + 200, 125);
+
+    doc.fillColor('#1e3a8a').font('Helvetica-Bold').text('PAYROLL #', rightX, 150);
+    doc.text('NI NUMBER', rightX + 100, 150);
+    doc.text('TAX CODE', rightX + 200, 150);
+
+    doc.fillColor('#111827').font('Helvetica').fontSize(10);
+    doc.text(salarySlip._id.toString().slice(-6), rightX, 165);
+    doc.text('N/A', rightX + 100, 165);
+    doc.text('1250L', rightX + 200, 165);
+
+    // === Earnings Table ===
+    let tableTop = 220;
+    doc.fillColor('#444').font('Helvetica-Bold').fontSize(11).text('EARNINGS', 40, tableTop);
+    tableTop += 20;
+
+    // Headers
+    doc.rect(40, tableTop, 515, 20).fill('#e5e7eb');
+    doc.fillColor('#111827').fontSize(10);
+    doc.text('EARNINGS', colX[0] + 5, tableTop + 5);
+    doc.text('HOURS', colX[1] + 5, tableTop + 5);
+    doc.text('RATE', colX[2] + 5, tableTop + 5);
+    doc.text('CURRENT', colX[3] + 5, tableTop + 5);
+    doc.text('YTD', colX[4] + 5, tableTop + 5);
+    tableTop += 20;
+
+    // === Row: Basic Pay ===
+    doc.rect(40, tableTop, 515, 20).fill('#fff').stroke('#d1d5db');
+    doc.fillColor('#111827').font('Helvetica').fontSize(10);
+    doc.text('Basic Pay', colX[0] + 5, tableTop + 5);
+    doc.text(salarySlip.hoursWorked, colX[1] + 5, tableTop + 5);
+    doc.text(`INR ${(salarySlip.amount / salarySlip.hoursWorked).toFixed(2)}`, colX[2] + 5, tableTop + 5);
+    doc.text(`INR ${salarySlip.amount}`, colX[3] + 5, tableTop + 5);
+    doc.text(`INR ${salarySlip.amount}`, colX[4] + 5, tableTop + 5);
+    tableTop += 30;
+
+    // === Gross Pay ===
+    doc.font('Helvetica-Bold').text('GROSS PAY', colX[0] + 5, tableTop + 5);
+    doc.text(`INR ${salarySlip.amount}`, colX[3] + 5, tableTop + 5);
+    doc.text(`INR ${salarySlip.amount}`, colX[4] + 5, tableTop + 5);
+    tableTop += 40;
+
+    // === Net Pay Section ===
+    doc.rect(40, tableTop, 515, 30).fill('#f3f4f6').stroke('#d1d5db');
+    doc.fillColor('#111827').font('Helvetica-Bold').fontSize(12);
+    doc.text('NET PAY', colX[0] + 5, tableTop + 8);
+    doc.text(`INR ${salarySlip.amount}`, colX[3] + 5, tableTop + 8);
+
+    // === Footer ===
+    doc.fontSize(9).fillColor('#6b7280').text(
+      `If you have any questions about this payslip, please contact HR | © ${year} Fintradify`,
+      40, 800, { align: 'center' }
+    );
+
+    doc.end();
+  });
+};
+
+/**
+ * @route POST /salaryslips
+ * @desc Create salary slip + send email
+ */
 router.post('/', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'Unauthorized' });
   const { employeeId, month, hourlyRate } = req.body;
@@ -21,7 +124,7 @@ router.post('/', auth, async (req, res) => {
     });
 
     const totalHours = attendances.reduce((sum, att) => {
-      if (att.punchIn && att.punchOut) {
+      if (att.punchIn && att.punchOut && new Date(att.punchOut) > new Date(att.punchIn)) {
         return sum + (new Date(att.punchOut) - new Date(att.punchIn)) / 1000 / 60 / 60;
       }
       return sum;
@@ -38,81 +141,13 @@ router.post('/', auth, async (req, res) => {
     await salarySlip.save();
 
     const employee = await Employee.findById(employeeId);
-    const pdfBuffer = await new Promise((resolve) => {
-      const doc = new PDFDocument({ size: 'A4', margin: 40 });
-      let buffers = [];
-      doc.on('data', buffers.push.bind(buffers));
-      doc.on('end', () => resolve(Buffer.concat(buffers)));
 
-      // Header with gradient background
-      const gradient = doc.linearGradient(0, 0, 595, 100);
-      gradient.stop(0, '#1e3a8a').stop(1, '#3b82f6');
-      doc.rect(0, 0, 595, 120).fill(gradient);
-      doc.fillColor('white').font('Helvetica-Bold').fontSize(26).text('Fintradify', 40, 30);
-      doc.font('Helvetica').fontSize(12).text('C6, C Block, Sector 7, Noida, UP 201301', 40, 65);
-      doc.fontSize(10).text('Email: hr@fintradify.com | Phone: +91 7836009907', 40, 85);
-      doc.moveDown(2);
-
-      // Title
-      doc.fillColor('#1e3a8a').font('Helvetica-Bold').fontSize(18).text(`Salary Slip for ${month}`, 40, 150, { align: 'center' });
-      doc.moveTo(200, 170).lineTo(395, 170).lineWidth(2).strokeColor('#1e3a8a').stroke();
-      doc.moveDown(2);
-
-      // Employee Details Table
-      doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Employee Details', 40, 200);
-      doc.moveDown(0.5);
-
-      // Table structure
-      const tableTop = 220;
-      const tableLeft = 40;
-      const col1Width = 180;
-      const col2Width = 355;
-      const rowHeight = 30;
-
-      // Table headers
-      doc.font('Helvetica-Bold').fontSize(11).fillColor('#ffffff');
-      doc.rect(tableLeft, tableTop, col1Width, rowHeight).fill('#1e3a8a');
-      doc.rect(tableLeft + col1Width, tableTop, col2Width, rowHeight).fill('#1e3a8a');
-      doc.text('Field', tableLeft + 15, tableTop + 10);
-      doc.text('Details', tableLeft + col1Width + 15, tableTop + 10);
-
-      // Table rows
-      doc.font('Helvetica').fontSize(10).fillColor('#111827');
-      const fields = [
-        ['Employee ID', employee.employeeId],
-        ['Name', employee.name],
-        ['Position', employee.position],
-        ['Month', month],
-        ['Hours Worked', totalHours.toFixed(2)],
-        ['Hourly Rate', `INR ${hourlyRate.toFixed(2)}`],
-        ['Total Salary', `INR ${amount}`],
-        ['Date', new Date().toLocaleDateString('en-IN')]
-      ];
-
-      fields.forEach(([field, value], index) => {
-        const y = tableTop + (index + 1) * rowHeight;
-        doc.rect(tableLeft, y, col1Width, rowHeight).fill(index % 2 === 0 ? '#f9fafb' : '#ffffff').stroke('#d1d5db');
-        doc.rect(tableLeft + col1Width, y, col2Width, rowHeight).fill(index % 2 === 0 ? '#f9fafb' : '#ffffff').stroke('#d1d5db');
-        doc.fillColor('#111827').text(field, tableLeft + 15, y + 10);
-        doc.text(value, tableLeft + col1Width + 15, y + 10);
-      });
-
-      // Footer with gradient
-      const footerGradient = doc.linearGradient(0, 742, 595, 842);
-      footerGradient.stop(0, '#1e3a8a').stop(1, '#3b82f6');
-      doc.rect(0, 742, 595, 100).fill(footerGradient);
-      doc.fillColor('white').font('Helvetica').fontSize(10);
-      doc.text('This is a computer-generated document. No signature required.', 40, 760, { align: 'center' });
-      doc.text('Fintradify | C6, C Block, Sector 7, Noida, UP 201301', 40, 780, { align: 'center' });
-      doc.text('Contact: hr@fintradify.com | Phone: +91 7836009907', 40, 800, { align: 'center' });
-
-      doc.end();
-    });
+    const pdfBuffer = await generateSalarySlipPDF(salarySlip, employee);
 
     await sendEmail(
       employee.email,
       `Salary Slip for ${month}`,
-      `Dear ${employee.name},\n\nPlease find your salary slip for ${month} attached.\n\nDetails:\nHours Worked: ${totalHours.toFixed(2)}\nAmount: INR ${amount}\n\nRegards,\nFintradify HR Team`,
+      `Dear ${employee.name},\n\nPlease find your salary slip for ${month} attached.\n\nRegards,\nFintradify HR Team`,
       [{ filename: `salary-slip-${month}.pdf`, content: pdfBuffer }]
     );
 
@@ -123,6 +158,10 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
+/**
+ * @route GET /salaryslips/download/:id
+ * @desc Download salary slip as PDF
+ */
 router.get('/download/:id', auth, async (req, res) => {
   try {
     const salarySlip = await SalarySlip.findById(req.params.id).populate('employee');
@@ -130,80 +169,21 @@ router.get('/download/:id', auth, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.id !== salarySlip.employee._id.toString())
       return res.status(403).json({ message: 'You do not have permission' });
 
-    const doc = new PDFDocument({ size: 'A4', margin: 40 });
+    const pdfBuffer = await generateSalarySlipPDF(salarySlip, salarySlip.employee);
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=salary-slip-${salarySlip.month}.pdf`);
-    doc.pipe(res);
-
-    // Header with gradient background
-    const gradient = doc.linearGradient(0, 0, 595, 100);
-    gradient.stop(0, '#1e3a8a').stop(1, '#3b82f6');
-    doc.rect(0, 0, 595, 120).fill(gradient);
-    doc.fillColor('white').font('Helvetica-Bold').fontSize(26).text('Fintradify', 40, 30);
-    doc.font('Helvetica').fontSize(12).text('C6, C Block, Sector 7, Noida, UP 201301', 40, 65);
-    doc.fontSize(10).text('Email: hr@fintradify.com | Phone: +91 7836009907', 40, 85);
-    doc.moveDown(2);
-
-    // Title
-    doc.fillColor('#1e3a8a').font('Helvetica-Bold').fontSize(18).text(`Salary Slip for ${salarySlip.month}`, 40, 150, { align: 'center' });
-    doc.moveTo(200, 170).lineTo(395, 170).lineWidth(2).strokeColor('#1e3a8a').stroke();
-    doc.moveDown(2);
-
-    // Employee Details Table
-    doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Employee Details', 40, 200);
-    doc.moveDown(0.5);
-
-    // Table structure
-    const tableTop = 220;
-    const tableLeft = 40;
-    const col1Width = 180;
-    const col2Width = 355;
-    const rowHeight = 30;
-
-    // Table headers
-    doc.font('Helvetica-Bold').fontSize(11).fillColor('#ffffff');
-    doc.rect(tableLeft, tableTop, col1Width, rowHeight).fill('#1e3a8a');
-    doc.rect(tableLeft + col1Width, tableTop, col2Width, rowHeight).fill('#1e3a8a');
-    doc.text('Field', tableLeft + 15, tableTop + 10);
-    doc.text('Details', tableLeft + col1Width + 15, tableTop + 10);
-
-    // Table rows
-    doc.font('Helvetica').fontSize(10).fillColor('#111827');
-    const fields = [
-      ['Employee ID', salarySlip.employee.employeeId],
-      ['Name', salarySlip.employee.name],
-      ['Position', salarySlip.employee.position],
-      ['Month', salarySlip.month],
-      ['Hours Worked', salarySlip.hoursWorked],
-      ['Hourly Rate', `INR ${(salarySlip.amount / salarySlip.hoursWorked).toFixed(2)}`],
-      ['Total Salary', `INR ${salarySlip.amount}`],
-      ['Date', new Date().toLocaleDateString('en-IN')]
-    ];
-
-    fields.forEach(([field, value], index) => {
-      const y = tableTop + (index + 1) * rowHeight;
-      doc.rect(tableLeft, y, col1Width, rowHeight).fill(index % 2 === 0 ? '#f9fafb' : '#ffffff').stroke('#d1d5db');
-      doc.rect(tableLeft + col1Width, y, col2Width, rowHeight).fill(index % 2 === 0 ? '#f9fafb' : '#ffffff').stroke('#d1d5db');
-      doc.fillColor('#111827').text(field, tableLeft + 15, y + 10);
-      doc.text(value, tableLeft + col1Width + 15, y + 10);
-    });
-
-    // Footer with gradient
-    const footerGradient = doc.linearGradient(0, 742, 595, 842);
-    footerGradient.stop(0, '#1e3a8a').stop(1, '#3b82f6');
-    doc.rect(0, 742, 595, 100).fill(footerGradient);
-    doc.fillColor('white').font('Helvetica').fontSize(10);
-    doc.text('This is a computer-generated document. No signature required.', 40, 760, { align: 'center' });
-    doc.text('Fintradify | C6, C Block, Sector 7, Noida, Uttar Pradesh 201301', 40, 780, { align: 'center' });
-    doc.text('Contact: hr@fintradify.com | Phone: +91 7836009907', 40, 800, { align: 'center' });
-
-    doc.end();
+    res.end(pdfBuffer);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
+/**
+ * @route GET /salaryslips/my-slips
+ * @desc Get logged-in user's slips
+ */
 router.get('/my-slips', auth, async (req, res) => {
   try {
     const slips = await SalarySlip.find({ employee: req.user.id }).populate('employee');
@@ -214,6 +194,10 @@ router.get('/my-slips', auth, async (req, res) => {
   }
 });
 
+/**
+ * @route GET /salaryslips
+ * @desc Get all slips (admin only)
+ */
 router.get('/', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ message: 'Unauthorized' });
   try {
