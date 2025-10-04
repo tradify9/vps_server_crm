@@ -114,9 +114,7 @@ router.get('/overview', auth, async (req, res) => {
         att.punchOut && att.punchIn
           ? (
               (new Date(att.punchOut) - new Date(att.punchIn)) /
-              1000 /
-              60 /
-              60
+              1000 / 60 / 60
             ).toFixed(2)
           : '0.00';
 
@@ -195,33 +193,26 @@ router.get('/download', auth, async (req, res) => {
         ? ((new Date(att.punchOut) - new Date(att.punchIn)) / 1000 / 60 / 60).toFixed(2)
         : '0.00';
       const dateMonth = new Date(att.date).toISOString().slice(0, 7);
-      const salarySlip = salarySlips.find(
-        slip => slip.employee._id.toString() === att.employee?._id?.toString() && slip.month === dateMonth
+
+      const salarySlip = salarySlips.find(slip =>
+        slip?.employee?._id?.toString() === att.employee?._id?.toString() &&
+        slip.month === dateMonth
       );
-      const hourlyRate = salarySlip ? (salarySlip.amount / salarySlip.hoursWorked).toFixed(2) : '100.00';
-      const totalSalary = (hoursWorked * hourlyRate).toFixed(2);
+
+      const hourlyRate = salarySlip && salarySlip.hoursWorked > 0
+        ? (salarySlip.amount / salarySlip.hoursWorked).toFixed(2)
+        : '100.00';
+      const totalSalary = (parseFloat(hoursWorked) * parseFloat(hourlyRate)).toFixed(2);
 
       return {
         employeeId: att.employee?.employeeId || 'N/A',
         name: att.employee?.name || 'N/A',
         date: new Date(att.date).toLocaleDateString('en-IN'),
         punchIn: att.punchIn
-          ? new Date(att.punchIn).toLocaleTimeString('en-IN', {
-              timeZone: 'Asia/Kolkata',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: true,
-            })
+          ? new Date(att.punchIn).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
           : '-',
         punchOut: att.punchOut
-          ? new Date(att.punchOut).toLocaleTimeString('en-IN', {
-              timeZone: 'Asia/Kolkata',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: true,
-            })
+          ? new Date(att.punchOut).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
           : '-',
         hoursWorked,
         hourlyRate,
@@ -282,31 +273,23 @@ router.get('/download/my-attendance', auth, async (req, res) => {
         ? ((new Date(att.punchOut) - new Date(att.punchIn)) / 1000 / 60 / 60).toFixed(2)
         : '0.00';
       const dateMonth = new Date(att.date).toISOString().slice(0, 7);
+
       const salarySlip = salarySlips.find(slip => slip.month === dateMonth);
-      const hourlyRate = salarySlip ? (salarySlip.amount / salarySlip.hoursWorked).toFixed(2) : '100.00';
-      const totalSalary = (hoursWorked * hourlyRate).toFixed(2);
+
+      const hourlyRate = salarySlip && salarySlip.hoursWorked > 0
+        ? (salarySlip.amount / salarySlip.hoursWorked).toFixed(2)
+        : '100.00';
+      const totalSalary = (parseFloat(hoursWorked) * parseFloat(hourlyRate)).toFixed(2);
 
       return {
         employeeId: att.employee?.employeeId || 'N/A',
         name: att.employee?.name || 'N/A',
         date: new Date(att.date).toLocaleDateString('en-IN'),
         punchIn: att.punchIn
-          ? new Date(att.punchIn).toLocaleTimeString('en-IN', {
-              timeZone: 'Asia/Kolkata',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: true,
-            })
+          ? new Date(att.punchIn).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
           : '-',
         punchOut: att.punchOut
-          ? new Date(att.punchOut).toLocaleTimeString('en-IN', {
-              timeZone: 'Asia/Kolkata',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: true,
-            })
+          ? new Date(att.punchOut).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
           : '-',
         hoursWorked,
         hourlyRate,
@@ -317,7 +300,7 @@ router.get('/download/my-attendance', auth, async (req, res) => {
     const csvContent = csvStringifier.getHeaderString() + csvStringifier.stringifyRecords(records);
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename=attendance-${startDate}-${endDate}.csv`);
+    res.setHeader('Content-Disposition', `attachment; filename=my-attendance-${startDate}-${endDate}.csv`);
     res.send('\ufeff' + csvContent);
   } catch (err) {
     console.error('Download my-attendance CSV error:', err);
