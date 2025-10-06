@@ -8,30 +8,42 @@ const { sendEmail } = require('../utils/sendEmail');
 
 router.post('/login', async (req, res) => {
   const { email, password, otp } = req.body;
+
   try {
     const employee = await Employee.findOne({ email });
-    if (!employee) return res.status(400).json({ message: 'Employee ID Not Found ' });
+    if (!employee) {
+      return res.status(400).json({ message: 'Employee ID Not Found' });
+    }
 
+    // 🔹 If user is admin (login with password)
     if (employee.role === 'admin') {
-      if (!password) return res.status(400).json({ message: 'Password required for admin' });
+      if (!password) {
+        return res.status(400).json({ message: 'Password required for admin' });
+      }
 
       const isMatch = await bcrypt.compare(password, employee.password);
-      if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
+      if (!isMatch) {
+        return res.status(400).json({ message: 'Invalid credentials' });
+      }
 
+      // ✅ Token valid for 30 days
       const token = jwt.sign(
         { id: employee._id, role: employee.role },
         process.env.JWT_SECRET,
-        { expiresIn: '1h' }
+        { expiresIn: '30d' }
       );
 
       return res.json({ token, role: employee.role });
-    } else {
+    }
+
+    // 🔹 If user is normal employee (login with OTP)
+    else {
+      // Step 1: Generate OTP
       if (!otp) {
-        // ✅ Generate OTP
         const generatedOtp = Math.floor(1000 + Math.random() * 9000).toString();
         await Otp.create({ email, otp: generatedOtp });
 
-        // ✅ Professional Email Message
+        // Send OTP Email
         const subject = 'FinTradify Employee Login OTP';
         const message = `
           <div style="font-family: Arial, sans-serif; padding: 15px; background-color: #f4f4f4;">
@@ -50,25 +62,31 @@ router.post('/login', async (req, res) => {
         `;
 
         await sendEmail(email, subject, message);
-
         return res.json({ message: 'OTP sent to email' });
-      } else {
-        const otpRecord = await Otp.findOne({ email, otp });
-        if (!otpRecord) return res.status(400).json({ message: 'Invalid OTP' });
+      }
 
+      // Step 2: Verify OTP
+      else {
+        const otpRecord = await Otp.findOne({ email, otp });
+        if (!otpRecord) {
+          return res.status(400).json({ message: 'Invalid OTP' });
+        }
+
+        // Delete used OTP
         await Otp.deleteOne({ email, otp });
 
+        // ✅ Token valid for 30 days
         const token = jwt.sign(
           { id: employee._id, role: employee.role },
           process.env.JWT_SECRET,
-          { expiresIn: '1h' }
+          { expiresIn: '30d' }
         );
 
         return res.json({ token, role: employee.role });
       }
     }
   } catch (err) {
-    console.error(err);
+    console.error('❌ Server Error:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
